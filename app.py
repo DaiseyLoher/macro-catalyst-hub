@@ -7,6 +7,28 @@ import feedparser
 st.set_page_config(page_title="Macro & Earnings Catalyst Hub", layout="wide")
 st.title("🎯 4-Week Catalyst & Binary Event Matrix")
 
+def classify_speech_impact(title, summary=""):
+    text = (title + " " + summary).lower()
+    
+    # Tier 1: Fed Leadership
+    tier_1_speakers = ["powell", "jefferson", "williams", "chair", "vice chair"]
+    tier_1_venues = ["jackson hole", "testimony", "monetary policy report", "humphrey-hawkins", "press conference"]
+    
+    # Tier 2: Influential Governors & Key Voters
+    tier_2_speakers = ["waller", "bowman", "barr", "cook", "kugler", "bostic", "goolsbee", "kashkari", "logan"]
+    tier_2_topics = ["economic outlook", "inflation", "monetary policy", "interest rates", "balance sheet", "qt"]
+
+    # Check Tier 1
+    if any(s in text for s in tier_1_speakers) or any(v in text for v in tier_1_venues):
+        if not any(k in text for k in ["welcoming remarks", "opening remarks", "adjournment"]):
+            return "🔴 Macro Pivot (High)", "Tier 1: Leadership / High Policy Beta"
+            
+    # Check Tier 2
+    if any(s in text for s in tier_2_speakers) and any(t in text for t in tier_2_topics):
+        return "⚠️ Rate Guidance (Mid)", "Tier 2: FOMC Voter Policy Discussion"
+        
+    return "🟡 Low Impact", "Tier 3: Academic / Non-Monetary Remarks"
+
 # ==========================================
 # 1. SECRETS & SIDEBAR CONFIGURATION
 # ==========================================
@@ -23,7 +45,7 @@ with st.sidebar:
     st.subheader("Watchlist")
     watchlist_input = st.text_input(
         "Tickers (comma-separated)", 
-        "NVDA, AAPL, BRK.B, RTX, JPM, XOM", 
+        "NVDA, MSFT, AAPL, AMZN, GOOGL, META, TSLA, TSM, ASML, AMD, JPM, GS, WMT, COST, HD, CAT, FDX, XOM, UNH, ORCL", 
         key="watchlist_input_v10"
     )
     tickers = [t.strip().upper() for t in watchlist_input.split(",") if t.strip()]
