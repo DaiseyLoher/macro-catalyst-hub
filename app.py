@@ -13,7 +13,11 @@ st.title("🎯 4-Week Catalyst & Binary Event Matrix")
 finnhub_key = st.secrets.get("FINNHUB_KEY", "")
 with st.sidebar:
     st.header("Watchlist Settings")
-    watchlist_input = st.text_input("Watchlist (comma-separated)", "NVDA, AAPL, BRK-B, RTX, JPM, XOM")
+    watchlist_input = st.text_input(
+        "Watchlist (comma-separated)", 
+        "NVDA, AAPL, MU, RTX, JPM, XOM, TSLA", 
+        key="watchlist_v2"  # Incrementing this forces a clean reset
+    )
     tickers = [t.strip().upper() for t in watchlist_input.split(",") if t.strip()]
     if not finnhub_key:
         finnhub_key = st.text_input("Finnhub API Key (Optional)", type="password")
