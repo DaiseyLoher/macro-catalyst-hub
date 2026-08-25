@@ -27,7 +27,7 @@ with st.sidebar:
     watchlist_input = st.text_input(
         "Tickers (comma-separated)", 
         "NVDA, AAPL, BRK.B, RTX, JPM, XOM", 
-        key="watchlist_input_v6"
+        key="watchlist_input_v8"
     )
     tickers = [t.strip().upper() for t in watchlist_input.split(",") if t.strip()]
 
@@ -48,23 +48,20 @@ today_str = today.strftime("%Y-%m-%d")
 end_str = end_date.strftime("%Y-%m-%d")
 
 # ==========================================
-# 2. PIPELINE A: FMP ECONOMIC CALENDAR (4-HOUR CACHE TO SAVE 250 CALL CAP)
+# 2. DATA PIPELINES
 # ==========================================
-@st.cache_data(ttl=14400) # Caches for 4 hours (max 6 API calls/day)
+@st.cache_data(ttl=14400)
 def get_fmp_economic_calendar(api_key, start_d, end_d, impact_choice):
     events = []
     if not api_key:
         return events
-    
     url = f"https://financialmodelingprep.com/api/v3/economic_calendar?from={start_d}&to={end_d}&apikey={api_key}"
     try:
         res = requests.get(url, timeout=10).json()
         if isinstance(res, list):
             for item in res:
-                country = item.get("country", "")
-                if country != "US":
+                if item.get("country") != "US":
                     continue
-                
                 impact = str(item.get("impact", "")).capitalize()
                 if impact_choice == "High Impact Only" and impact != "High":
                     continue
@@ -73,28 +70,22 @@ def get_fmp_economic_calendar(api_key, start_d, end_d, impact_choice):
                 
                 raw_date = item.get("date", "")
                 event_date = raw_date.split(" ")[0] if " " in raw_date else raw_date
-                event_name = item.get("event", "Macro Event")
-                
                 estimate = item.get("estimate", "N/A")
                 previous = item.get("previous", "N/A")
                 unit = item.get("unit", "")
                 
-                details = f"Impact: {impact.upper()} | Est: {estimate} {unit} | Prev: {previous} {unit}"
-                
                 events.append({
                     "Date": event_date,
-                    "Event": f"[US] {event_name}",
+                    "Event": f"[US] {item.get('event', 'Macro Event')}",
                     "Category": "Macro Economic",
+                    "Source": "FMP",
                     "Risk Tier": "🔴 Macro Pivot" if impact == "High" else "⚠️ Mid Impact",
-                    "Details": details
+                    "Details": f"Impact: {impact.upper()} | Est: {estimate} {unit} | Prev: {previous} {unit}"
                 })
     except Exception:
         pass
     return events
 
-# ==========================================
-# 3. PIPELINE B: FOREXFACTORY (LIVE THIS WEEK)
-# ==========================================
 @st.cache_data(ttl=1800)
 def get_forexfactory_thisweek(impact_choice):
     events = []
@@ -117,6 +108,7 @@ def get_forexfactory_thisweek(impact_choice):
                     "Date": event_date,
                     "Event": f"[USD] {item.get('title')}",
                     "Category": "Macro Economic",
+                    "Source": "ForexFactory",
                     "Risk Tier": "🔴 Macro Pivot" if impact == "High" else "⚠️ Mid Impact",
                     "Details": f"Forecast: {item.get('forecast', 'N/A')} | Previous: {item.get('previous', 'N/A')}"
                 })
@@ -124,15 +116,11 @@ def get_forexfactory_thisweek(impact_choice):
         pass
     return events
 
-# ==========================================
-# 4. PIPELINE C: FRED API (OFFICIAL US RELEASES)
-# ==========================================
 @st.cache_data(ttl=14400)
 def get_fred_calendar(api_key, start_d, end_d):
     events = []
     if not api_key:
         return events
-    
     tracked_releases = {
         10: "US CPI Inflation (Headline & Core)",
         11: "US PPI Producer Price Index",
@@ -143,7 +131,6 @@ def get_fred_calendar(api_key, start_d, end_d):
         27: "US Housing Starts & Building Permits",
         323:"FOMC Policy Materials"
     }
-    
     url = (
         f"https://api.stlouisfed.org/fred/releases/dates?"
         f"api_key={api_key}&file_type=json&include_release_dates_with_no_data=true&"
@@ -158,6 +145,7 @@ def get_fred_calendar(api_key, start_d, end_d):
                     "Date": item.get("date"),
                     "Event": f"[US] {tracked_releases[rel_id]}",
                     "Category": "Macro Economic",
+                    "Source": "FRED",
                     "Risk Tier": "🔴 Macro Pivot",
                     "Details": f"Official Federal Release (FRED ID: {rel_id})"
                 })
@@ -165,9 +153,6 @@ def get_fred_calendar(api_key, start_d, end_d):
         pass
     return events
 
-# ==========================================
-# 5. PIPELINE D: FINNHUB SINGLE-STOCK EARNINGS
-# ==========================================
 @st.cache_data(ttl=1800)
 def get_finnhub_earnings(api_key, ticker_list, start_d, end_d):
     events = []
@@ -180,13 +165,14 @@ def get_finnhub_earnings(api_key, ticker_list, start_d, end_d):
             res = requests.get(url, timeout=5).json()
             for item in res.get("earningsCalendar", []):
                 e_hour = item.get("hour", "").upper()
-                timing = "Before Open (BMO)" if e_hour == "BMO" else ("After Close (AMC)" if e_hour == "AMC" else "During Session")
+                timing = "BMO" if e_hour == "BMO" else ("AMC" if e_hour == "AMC" else "Session")
                 eps_est = item.get("epsEstimate")
                 details = f"Timing: {timing} | EPS Est: ${eps_est:.2f}" if eps_est is not None else f"Timing: {timing}"
                 events.append({
                     "Date": item.get("date"),
                     "Event": f"{sym} Earnings",
                     "Category": "Single Stock",
+                    "Source": "Finnhub",
                     "Risk Tier": "🚨 High Volatility",
                     "Details": details
                 })
@@ -194,9 +180,6 @@ def get_finnhub_earnings(api_key, ticker_list, start_d, end_d):
             continue
     return events
 
-# ==========================================
-# 6. PIPELINE E: FED RSS & EIA OIL DELTAS
-# ==========================================
 @st.cache_data(ttl=1800)
 def get_fed_speeches():
     feed = feedparser.parse("https://www.federalreserve.gov/feeds/press_all.xml")
@@ -208,6 +191,7 @@ def get_fed_speeches():
                 "Date": pd.to_datetime(entry.published).strftime("%Y-%m-%d"),
                 "Event": title,
                 "Category": "Central Bank",
+                "Source": "Fed RSS",
                 "Risk Tier": "⚠️ Rate Guidance",
                 "Details": entry.get("summary", "Federal Reserve Speech")
             })
@@ -217,34 +201,50 @@ def get_eia_releases(start_d, lookahead):
     events = []
     for i in range(lookahead):
         d = start_d + datetime.timedelta(days=i)
-        if d.weekday() == 2:  # Wednesday
+        if d.weekday() == 2:
             events.append({
                 "Date": d.strftime("%Y-%m-%d"),
                 "Event": "[USD] EIA Petroleum Status Report",
                 "Category": "Energy",
+                "Source": "EIA Petroleum",
                 "Risk Tier": "🟡 Commodity Beta",
                 "Details": "10:30 AM EST | Commercial Crude Inventory Delta"
             })
     return events
 
 # ==========================================
-# 7. CONSOLIDATE, DEDUPLICATE & RENDER
+# 3. ROW COLOR FORMATTING ENGINE
+# ==========================================
+def style_row_by_category(row):
+    """Applies subtle background tints based on category for readability."""
+    cat = row.get("Category", "")
+    if cat == "Single Stock":
+        # Cyan / Blue Tint (Equity Catalysts)
+        return ["background-color: rgba(0, 229, 255, 0.14)"] * len(row)
+    elif cat == "Macro Economic":
+        # Red / Rose Tint (High Macro Impact)
+        return ["background-color: rgba(255, 23, 68, 0.14)"] * len(row)
+    elif cat == "Energy":
+        # Amber / Gold Tint (Commodities)
+        return ["background-color: rgba(255, 214, 0, 0.15)"] * len(row)
+    elif cat == "Central Bank":
+        # Purple / Violet Tint (Speeches / Fed)
+        return ["background-color: rgba(224, 64, 251, 0.14)"] * len(row)
+    return [""] * len(row)
+
+# ==========================================
+# 4. CONSOLIDATE, STYLE & RENDER
 # ==========================================
 all_catalysts = []
 
-# 1. Macro Economic Calendars
 if use_fmp and fmp_key:
     all_catalysts.extend(get_fmp_economic_calendar(fmp_key, today_str, end_str, min_impact))
 if use_ff:
     all_catalysts.extend(get_forexfactory_thisweek(min_impact))
 if use_fred and fred_key:
     all_catalysts.extend(get_fred_calendar(fred_key, today_str, end_str))
-
-# 2. Single-Stock Earnings
 if finnhub_key:
     all_catalysts.extend(get_finnhub_earnings(finnhub_key, tickers, today_str, end_str))
-
-# 3. Speeches & Energy
 if use_fed:
     all_catalysts.extend(get_fed_speeches())
 if use_eia:
@@ -255,16 +255,14 @@ df = pd.DataFrame(all_catalysts)
 if not df.empty:
     df["Date"] = pd.to_datetime(df["Date"])
     df = df[df["Date"].dt.date >= today]
-    
-    # Clean deduplication by date and matching title keywords
     df = df.drop_duplicates(subset=["Date", "Event"]).sort_values(by="Date", ascending=True).reset_index(drop=True)
     
     df["Days Left"] = (df["Date"].dt.date - today).apply(
         lambda x: "TODAY" if x.days == 0 else f"In {x.days}D"
     )
-    df["Formatted Date"] = df["Date"].dt.strftime("%Y-%m-%d")
+    df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
 
-    # Metric KPI Cards
+    # KPI Summary Cards
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Tracked Tickers", len(tickers))
     c2.metric("Total Catalysts", len(df))
@@ -273,11 +271,33 @@ if not df.empty:
 
     st.subheader(f"📅 Consolidated Catalyst Timeline ({today_str} to {end_str})")
     
-    selected_cats = st.multiselect("Filter by Category", options=df["Category"].unique(), default=df["Category"].unique())
-    filtered_df = df[df["Category"].isin(selected_cats)]
+    # Legend Guide
+    st.markdown(
+        """
+        <div style="display: flex; gap: 20px; font-size: 0.85rem; margin-bottom: 12px;">
+            <span><span style="display:inline-block;width:12px;height:12px;background:rgba(0,229,255,0.4);border-radius:2px;margin-right:6px;"></span><b>Single Stock</b></span>
+            <span><span style="display:inline-block;width:12px;height:12px;background:rgba(255,23,68,0.4);border-radius:2px;margin-right:6px;"></span><b>Macro Economic</b></span>
+            <span><span style="display:inline-block;width:12px;height:12px;background:rgba(255,214,0,0.4);border-radius:2px;margin-right:6px;"></span><b>Energy</b></span>
+            <span><span style="display:inline-block;width:12px;height:12px;background:rgba(224,64,251,0.4);border-radius:2px;margin-right:6px;"></span><b>Central Bank</b></span>
+        </div>
+        """, 
+        unsafe_allow_html=True
+    )
+
+    f_col1, f_col2 = st.columns(2)
+    with f_col1:
+        selected_cats = st.multiselect("Filter by Category", options=df["Category"].unique(), default=df["Category"].unique())
+    with f_col2:
+        selected_sources = st.multiselect("Filter by Source", options=df["Source"].unique(), default=df["Source"].unique())
+        
+    filtered_df = df[df["Category"].isin(selected_cats) & df["Source"].isin(selected_sources)]
     
+    # Reorder columns & apply row-level background styling
+    display_df = filtered_df[["Date", "Days Left", "Event", "Category", "Source", "Risk Tier", "Details"]]
+    styled_df = display_df.style.apply(style_row_by_category, axis=1)
+
     st.dataframe(
-        filtered_df[["Formatted Date", "Days Left", "Event", "Category", "Risk Tier", "Details"]].rename(columns={"Formatted Date": "Date"}),
+        styled_df,
         use_container_width=True,
         hide_index=True
     )
