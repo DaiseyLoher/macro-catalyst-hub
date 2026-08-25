@@ -325,19 +325,19 @@ def analyze_week_regime(week_df):
             score += 1
 
     # Regime Determination
-    if score >= 3:
+    if score >= 5:
         return {
             "regime": "🚨 High Binary Risk / Volatility Cluster",
             "color": "#FF1744",
             "summary": f"Binary event density is elevated ({tier1_macro_count} Tier-1 Macro print(s), {mag7_earnings_count} Mag-7 report(s)). Expect elevated implied volatility, directional gap risk, and choppy pre-event price action."
         }
-    elif score == 2:
+    elif score == 3 or score == 4:
         return {
             "regime": "⚠️ Policy Guidance / Selective Binary Risk",
             "color": "#E040FB",
             "summary": "Moderate headline catalyst scheduled (isolated mega-cap earnings or Fed rate guidance). Index trend is tradable, but exercise caution around event release windows."
         }
-    elif score == 1:
+    elif score == 2:
         return {
             "regime": "📊 Single-Stock Dispersion / Low Macro Beta",
             "color": "#00E5FF",
