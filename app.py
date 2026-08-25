@@ -1,114 +1,211 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import yfinance as yf
-import feedparser
 import requests
+import feedparser
 
 st.set_page_config(page_title="Macro & Earnings Catalyst Hub", layout="wide")
-
 st.title("🎯 4-Week Catalyst & Binary Event Matrix")
 
-# Read Finnhub key from Streamlit Secrets or manual sidebar input
+# ==========================================
+# 1. CONFIGURATION & SECRETS
+# ==========================================
 finnhub_key = st.secrets.get("FINNHUB_KEY", "")
-with st.sidebar:
-    st.header("Watchlist Settings")
-    watchlist_input = st.text_input(
-        "Watchlist (comma-separated)", 
-        "NVDA, AAPL, MU, RTX, JPM, XOM, TSLA", 
-        key="watchlist_v2"  # Incrementing this forces a clean reset
-    )
-    tickers = [t.strip().upper() for t in watchlist_input.split(",") if t.strip()]
-    if not finnhub_key:
-        finnhub_key = st.text_input("Finnhub API Key (Optional)", type="password")
 
-@st.cache_data(ttl=3600)
-def get_earnings_calendar(ticker_list):
+with st.sidebar:
+    st.header("⚙️ Configuration")
+    if not finnhub_key:
+        finnhub_key = st.text_input("Finnhub API Key", type="password")
+    
+    st.subheader("Watchlist")
+    watchlist_input = st.text_input(
+        "Tickers (comma-separated)", 
+        "NVDA, AAPL, BRK.B, RTX, JPM, XOM", 
+        key="watchlist_input_v2"
+    )
+    # Clean tickers: convert BRK.B to BRK-B or BRK.B depending on API
+    tickers = [t.strip().upper() for t in watchlist_input.split(",") if t.strip()]
+
+    st.subheader("Macro Calendar Filters")
+    min_impact = st.selectbox("Minimum Event Impact", ["High Impact Only", "Medium & High", "All Events"], index=0)
+    lookahead_days = st.slider("Lookahead Window (Days)", min_value=7, max_value=45, value=28)
+    
+    track_fed = st.checkbox("Track Fed Speeches (RSS)", value=True)
+    track_eia = st.checkbox("Track Weekly EIA Crude Oil Prints", value=True)
+
+# Date calculations
+today = datetime.date.today()
+end_date = today + datetime.timedelta(days=lookahead_days)
+today_str = today.strftime("%Y-%m-%d")
+end_str = end_date.strftime("%Y-%m-%d")
+
+# ==========================================
+# 2. EARNINGS PIPELINE (FINNHUB NATIVE)
+# ==========================================
+@st.cache_data(ttl=1800)
+def get_finnhub_earnings(api_key, ticker_list, start_d, end_d):
     events = []
+    if not api_key:
+        return events
+    
     for sym in ticker_list:
+        # Finnhub uses BRK.B format
+        clean_sym = sym.replace("-", ".")
+        url = f"https://finnhub.io/api/v1/calendar/earnings?from={start_d}&to={end_d}&symbol={clean_sym}&token={api_key}"
         try:
-            t = yf.Ticker(sym)
-            cal = t.calendar
-            if cal is not None and not cal.empty:
-                if 'Earnings Date' in cal.index:
-                    dates = cal.loc['Earnings Date']
-                    earn_date = dates.iloc[0] if isinstance(dates, pd.Series) else dates[0]
-                    events.append({
-                        "Event": f"{sym} Earnings",
-                        "Category": "Single Stock",
-                        "Date": pd.to_datetime(earn_date).strftime("%Y-%m-%d"),
-                        "Details": "Quarterly Financial Release",
-                        "Risk Tier": "🚨 High Volatility"
-                    })
+            res = requests.get(url, timeout=5).json()
+            earnings_list = res.get("earningsCalendar", [])
+            for item in earnings_list:
+                e_date = item.get("date")
+                e_hour = item.get("hour", "").upper()
+                timing = "Before Open (BMO)" if e_hour == "BMO" else ("After Close (AMC)" if e_hour == "AMC" else "During Session")
+                eps_est = item.get("epsEstimate")
+                details = f"Timing: {timing} | EPS Est: ${eps_est:.2f}" if eps_est is not None else f"Timing: {timing}"
+                
+                events.append({
+                    "Date": e_date,
+                    "Event": f"{sym} Earnings",
+                    "Category": "Single Stock",
+                    "Risk Tier": "🚨 High Volatility",
+                    "Details": details
+                })
         except Exception:
             continue
     return events
 
+# ==========================================
+# 3. MACRO ECONOMIC CALENDAR (FINNHUB)
+# ==========================================
+@st.cache_data(ttl=3600)
+def get_finnhub_macro(api_key, start_d, end_d, impact_level):
+    events = []
+    if not api_key:
+        return events
+    
+    url = f"https://finnhub.io/api/v1/calendar/economic?from={start_d}&to={end_d}&token={api_key}"
+    try:
+        res = requests.get(url, timeout=5).json()
+        raw_events = res.get("economicCalendar", [])
+        
+        # Whitelist of high-signal macro releases
+        macro_keywords = ["cpi", "fomc", "fed", "nonfarm", "unemployment", "ppi", "pce", "gdp", "retail sales", "ism", "interest rate"]
+        
+        for item in raw_events:
+            if item.get("country") != "US":
+                continue
+            
+            raw_impact = str(item.get("impact", "")).lower()
+            event_title = item.get("event", "")
+            
+            # Impact filtering
+            is_high = raw_impact in ["high", "3"]
+            is_med = raw_impact in ["medium", "2"]
+            matches_keyword = any(k in event_title.lower() for k in macro_keywords)
+            
+            if impact_level == "High Impact Only" and not (is_high or matches_keyword):
+                continue
+            elif impact_level == "Medium & High" and not (is_high or is_med or matches_keyword):
+                continue
+            
+            raw_time = item.get("time", "")
+            date_str = raw_time.split(" ")[0] if raw_time else today_str
+            
+            events.append({
+                "Date": date_str,
+                "Event": event_title,
+                "Category": "Macro Economic",
+                "Risk Tier": "🔴 Macro Pivot" if is_high or matches_keyword else "⚠️ Mid Impact",
+                "Details": f"Impact: {raw_impact.upper()} | Prev: {item.get('prev', 'N/A')} | Est: {item.get('estimate', 'N/A')}"
+            })
+    except Exception:
+        pass
+    return events
+
+# ==========================================
+# 4. FED SPEECHES & EIA RELEASES
+# ==========================================
 @st.cache_data(ttl=1800)
 def get_fed_speeches():
-    feed = feedparser.parse("https://www.federalreserve.gov/feeds/press_all.xml")
+    feed_url = "https://www.federalreserve.gov/feeds/press_all.xml"
+    feed = feedparser.parse(feed_url)
     speech_events = []
+    
     for entry in feed.entries[:15]:
         title = entry.title
-        if any(k in title.lower() for k in ["speech", "testimony", "statement", "fomc", "symposium"]):
+        if any(k in title.lower() for k in ["speech", "testimony", "statement", "fomc", "symposium", "conference"]):
+            pub_date = pd.to_datetime(entry.published).strftime("%Y-%m-%d")
             speech_events.append({
+                "Date": pub_date,
                 "Event": title,
                 "Category": "Central Bank",
-                "Date": pd.to_datetime(entry.published).strftime("%Y-%m-%d"),
-                "Details": entry.get("summary", "Federal Reserve Event"),
-                "Risk Tier": "⚠️ Rate Guidance"
+                "Risk Tier": "⚠️ Rate Guidance",
+                "Details": entry.get("summary", "Federal Reserve Speech")
             })
     return speech_events
 
-@st.cache_data(ttl=3600)
-def get_macro_calendar(api_key):
-    macro_events = []
-    if api_key:
-        try:
-            today = datetime.date.today()
-            end = today + datetime.timedelta(days=30)
-            url = f"https://finnhub.io/api/v1/calendar/economic?from={today}&to={end}&token={api_key}"
-            res = requests.get(url).json()
-            for item in res.get("economicCalendar", []):
-                if item.get("impact") in ["high", 3] and item.get("country") == "US":
-                    macro_events.append({
-                        "Event": item.get("event"),
-                        "Category": "Macro Economic",
-                        "Date": item.get("time", "").split(" ")[0],
-                        "Details": f"Impact: {item.get('impact')}",
-                        "Risk Tier": "🔴 Macro Pivot"
-                    })
-        except Exception:
-            pass
-            
-    if not macro_events:
-        today = datetime.date.today()
-        macro_events = [
-            {"Event": "US CPI Inflation Print", "Category": "Macro Economic", "Date": (today + datetime.timedelta(days=8)).strftime("%Y-%m-%d"), "Details": "Headline & Core CPI", "Risk Tier": "🔴 Macro Pivot"},
-            {"Event": "FOMC Rate Decision", "Category": "Macro Economic", "Date": (today + datetime.timedelta(days=14)).strftime("%Y-%m-%d"), "Details": "Policy Decision + Presser", "Risk Tier": "🔴 Macro Pivot"},
-            {"Event": "NFP Labor Report", "Category": "Macro Economic", "Date": (today + datetime.timedelta(days=21)).strftime("%Y-%m-%d"), "Details": "Non-Farm Payrolls", "Risk Tier": "⚠️ Rate Guidance"},
-            {"Event": "EIA Petroleum Stocks", "Category": "Energy", "Date": (today + datetime.timedelta(days=(2 - today.weekday()) % 7)).strftime("%Y-%m-%d"), "Details": "Weekly Commercial Crude Delta", "Risk Tier": "🟡 Commodity Beta"}
-        ]
-    return macro_events
+def get_eia_releases(start_d, lookahead):
+    eia_events = []
+    for i in range(lookahead):
+        d = start_d + datetime.timedelta(days=i)
+        if d.weekday() == 2:  # Wednesday
+            eia_events.append({
+                "Date": d.strftime("%Y-%m-%d"),
+                "Event": "EIA Weekly Crude Oil Stocks Change",
+                "Category": "Energy",
+                "Risk Tier": "🟡 Commodity Beta",
+                "Details": "Official US Petroleum Inventory Delta (10:30 AM EST)"
+            })
+    return eia_events
 
-all_events = []
-all_events.extend(get_earnings_calendar(tickers))
-all_events.extend(get_fed_speeches())
-all_events.extend(get_macro_calendar(finnhub_key))
+# ==========================================
+# 5. AGGREGATE & RENDER DASHBOARD
+# ==========================================
+all_catalysts = []
 
-df = pd.DataFrame(all_events)
+# Pull data
+if finnhub_key:
+    all_catalysts.extend(get_finnhub_earnings(finnhub_key, tickers, today_str, end_str))
+    all_catalysts.extend(get_finnhub_macro(finnhub_key, today_str, end_str, min_impact))
+else:
+    st.info("💡 Add your Finnhub API Key in Streamlit Secrets or the sidebar to enable automated earnings and economic calendars.")
+
+if track_fed:
+    all_catalysts.extend(get_fed_speeches())
+
+if track_eia:
+    all_catalysts.extend(get_eia_releases(today, lookahead_days))
+
+df = pd.DataFrame(all_catalysts)
+
 if not df.empty:
     df["Date"] = pd.to_datetime(df["Date"])
+    # Filter only future or today events
+    df = df[df["Date"].dt.date >= today]
     df = df.sort_values(by="Date", ascending=True).reset_index(drop=True)
-    df["Days Remaining"] = (df["Date"].dt.date - datetime.date.today()).apply(
-        lambda x: f"In {x.days} Days" if x.days > 0 else ("TODAY" if x.days == 0 else "Passed")
+    
+    df["Days Left"] = (df["Date"].dt.date - today).apply(
+        lambda x: "TODAY" if x.days == 0 else f"In {x.days}D"
     )
-    df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
+    df["Formatted Date"] = df["Date"].dt.strftime("%Y-%m-%d")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Tracked Equities", len(tickers))
-    col2.metric("Total Upcoming Catalysts", len(df))
-    col3.metric("High-Risk Events (Next 7D)", len(df[df["Days Remaining"].str.contains("0|1|2|3|4|5|6|7|TODAY")]))
+    # Metrics Summary
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Tracked Tickers", len(tickers))
+    c2.metric("Total Catalysts (Next 4W)", len(df))
+    c3.metric("Single-Stock Earnings", len(df[df["Category"] == "Single Stock"]))
+    c4.metric("High-Risk Events (Next 7D)", len(df[df["Days Left"].str.contains("TODAY|In 1D|In 2D|In 3D|In 4D|In 5D|In 6D|In 7D")]))
 
-    st.subheader("Upcoming Catalyst Timeline")
-    st.dataframe(df[["Date", "Days Remaining", "Event", "Category", "Risk Tier", "Details"]], use_container_width=True)
+    # Display Table
+    st.subheader(f"📅 Catalyst Timeline ({today_str} to {end_str})")
+    
+    # Category Filter
+    selected_cats = st.multiselect("Filter by Category", options=df["Category"].unique(), default=df["Category"].unique())
+    filtered_df = df[df["Category"].isin(selected_cats)]
+    
+    st.dataframe(
+        filtered_df[["Formatted Date", "Days Left", "Event", "Category", "Risk Tier", "Details"]].rename(columns={"Formatted Date": "Date"}),
+        use_container_width=True,
+        hide_index=True
+    )
+else:
+    st.warning("No scheduled catalysts found within this date range. Verify your API key or expand the lookahead window.")
