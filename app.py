@@ -115,16 +115,19 @@ def get_fred_calendar(api_key, start_d, end_d):
     events = []
     if not api_key:
         return events
-    tracked_releases = {
-        10: "US CPI Inflation (Headline & Core)",
-        11: "US PPI Producer Price Index",
-        50: "US Employment Situation (NFP & Unemployment)",
-        53: "US Gross Domestic Product (GDP)",
-        9:  "US Advance Monthly Retail Sales",
-        22: "US Industrial Production",
-        27: "US Housing Starts & Building Permits",
-        323:"FOMC Policy Materials"
+    
+    # Strict tiering: Only CPI, NFP, and FOMC get Tier-1 Macro Pivot status
+    release_metadata = {
+        10:  ("US CPI Inflation (Headline & Core)", "🔴 Macro Pivot (High)", "Tier 1: CPI Inflation Shock Risk"),
+        50:  ("US Employment Situation (NFP & Unemployment)", "🔴 Macro Pivot (High)", "Tier 1: Labor & Fed Pivot Risk"),
+        323: ("FOMC Policy Materials / Decision", "🔴 Macro Pivot (High)", "Tier 1: Fed Rate Decision"),
+        11:  ("US PPI Producer Price Index", "⚠️ Mid Impact", "Tier 2: Wholesale Inflation"),
+        53:  ("US Gross Domestic Product (GDP)", "⚠️ Mid Impact", "Tier 2: Quarterly Growth"),
+        9:   ("US Advance Monthly Retail Sales", "⚠️ Mid Impact", "Tier 2: Consumer Spending"),
+        22:  ("US Industrial Production", "🟡 Low Impact", "Tier 3: Manufacturing Output"),
+        27:  ("US Housing Starts & Permits", "🟡 Low Impact", "Tier 3: Real Estate Activity")
     }
+    
     url = (
         f"https://api.stlouisfed.org/fred/releases/dates?"
         f"api_key={api_key}&file_type=json&include_release_dates_with_no_data=true&"
@@ -134,14 +137,15 @@ def get_fred_calendar(api_key, start_d, end_d):
         res = requests.get(url, timeout=8).json()
         for item in res.get("release_dates", []):
             rel_id = item.get("release_id")
-            if rel_id in tracked_releases:
+            if rel_id in release_metadata:
+                name, risk_tier, desc = release_metadata[rel_id]
                 events.append({
                     "Date": item.get("date"),
-                    "Event": f"[US] {tracked_releases[rel_id]}",
+                    "Event": f"[US] {name}",
                     "Category": "Macro Economic",
                     "Source": "FRED",
-                    "Risk Tier": "🔴 Macro Pivot",
-                    "Details": f"Official Federal Release (FRED ID: {rel_id})"
+                    "Risk Tier": risk_tier,
+                    "Details": desc
                 })
     except Exception:
         pass
@@ -238,49 +242,113 @@ def style_row_by_category(row):
     return [""] * len(row)
 
 # ==========================================
-# 5. WEEK REGIME CLASSIFIER ENGINE
+# 1. ACCURATELY TIERED FRED MACRO CALENDAR
+# ==========================================
+@st.cache_data(ttl=14400)
+def get_fred_calendar(api_key, start_d, end_d):
+    events = []
+    if not api_key:
+        return events
+    
+    # Strict tiering: Only CPI, NFP, and FOMC get Tier-1 Macro Pivot status
+    release_metadata = {
+        10:  ("US CPI Inflation (Headline & Core)", "🔴 Macro Pivot (High)", "Tier 1: CPI Inflation Shock Risk"),
+        50:  ("US Employment Situation (NFP & Unemployment)", "🔴 Macro Pivot (High)", "Tier 1: Labor & Fed Pivot Risk"),
+        323: ("FOMC Policy Materials / Decision", "🔴 Macro Pivot (High)", "Tier 1: Fed Rate Decision"),
+        11:  ("US PPI Producer Price Index", "⚠️ Mid Impact", "Tier 2: Wholesale Inflation"),
+        53:  ("US Gross Domestic Product (GDP)", "⚠️ Mid Impact", "Tier 2: Quarterly Growth"),
+        9:   ("US Advance Monthly Retail Sales", "⚠️ Mid Impact", "Tier 2: Consumer Spending"),
+        22:  ("US Industrial Production", "🟡 Low Impact", "Tier 3: Manufacturing Output"),
+        27:  ("US Housing Starts & Permits", "🟡 Low Impact", "Tier 3: Real Estate Activity")
+    }
+    
+    url = (
+        f"https://api.stlouisfed.org/fred/releases/dates?"
+        f"api_key={api_key}&file_type=json&include_release_dates_with_no_data=true&"
+        f"realtime_start={start_d}&realtime_end={end_d}"
+    )
+    try:
+        res = requests.get(url, timeout=8).json()
+        for item in res.get("release_dates", []):
+            rel_id = item.get("release_id")
+            if rel_id in release_metadata:
+                name, risk_tier, desc = release_metadata[rel_id]
+                events.append({
+                    "Date": item.get("date"),
+                    "Event": f"[US] {name}",
+                    "Category": "Macro Economic",
+                    "Source": "FRED",
+                    "Risk Tier": risk_tier,
+                    "Details": desc
+                })
+    except Exception:
+        pass
+    return events
+
+# ==========================================
+# 2. CALIBRATED WEIGHTED REGIME CLASSIFIER
 # ==========================================
 def analyze_week_regime(week_df):
     """
-    Evaluates catalyst density and types to classify market regime and tactical playbook.
+    Weighted scoring model that prevents false-positive binary alerts.
     """
     if week_df.empty:
         return {
             "regime": "📈 Trend Continuation / Clear Horizon",
             "color": "#00E676",
-            "summary": "Zero major scheduled macro or earnings shocks. High probability for technical levels to hold and uninterrupted trend continuation."
+            "summary": "Zero scheduled macro or corporate catalysts. Optimal backdrop for technical swing setups and uninterrupted trend continuation."
         }
-    
-    macro_high = len(week_df[(week_df["Category"] == "Macro Economic") & (week_df["Risk Tier"].str.contains("🔴"))])
-    mega_earnings = len(week_df[week_df["Category"] == "Single Stock"])
-    cb_high = len(week_df[(week_df["Category"] == "Central Bank") & (week_df["Risk Tier"].str.contains("🔴"))])
-    total_events = len(week_df)
 
-    if macro_high >= 1 or mega_earnings >= 3 or (macro_high >= 1 and mega_earnings >= 1):
+    score = 0
+    tier1_macro_count = 0
+    mag7_earnings_count = 0
+    mag7_tickers = ["NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA"]
+
+    for _, row in week_df.iterrows():
+        event = str(row.get("Event", "")).upper()
+        cat = row.get("Category", "")
+        risk = str(row.get("Risk Tier", ""))
+
+        # 1. Tier-1 Macro Shocks (3 Points each)
+        if any(k in event for k in ["CPI", "NON-FARM", "EMPLOYMENT SITUATION", "FOMC RATE", "JACKSON HOLE KEYNOTE"]):
+            score += 3
+            tier1_macro_count += 1
+        # 2. Mega-Weight Mag-7 Earnings (2 Points each)
+        elif cat == "Single Stock" and any(t in event for t in mag7_tickers):
+            score += 2
+            mag7_earnings_count += 1
+        # 3. Central Bank Leadership / High Volatility Speeches (2 Points)
+        elif cat == "Central Bank" and "🔴" in risk:
+            score += 2
+        # 4. Standard Earnings or Mid-Tier Macro (1 Point each)
+        elif cat == "Single Stock" or "⚠️" in risk:
+            score += 1
+
+    # Regime Determination
+    if score >= 3:
         return {
             "regime": "🚨 High Binary Risk / Volatility Cluster",
             "color": "#FF1744",
-            "summary": f"Heavy binary catalyst cluster ({macro_high} Tier-1 Macro, {mega_earnings} Single-Stock Reports). Expect elevated IV, gap risk across indices, and choppy price action before prints."
+            "summary": f"Binary event density is elevated ({tier1_macro_count} Tier-1 Macro print(s), {mag7_earnings_count} Mag-7 report(s)). Expect elevated implied volatility, directional gap risk, and choppy pre-event price action."
         }
-    elif cb_high >= 1 or len(week_df[week_df["Category"] == "Central Bank"]) >= 2:
+    elif score == 2:
         return {
-            "regime": "⚠️ Policy Guidance / Rates Sensitivity",
+            "regime": "⚠️ Policy Guidance / Selective Binary Risk",
             "color": "#E040FB",
-            "summary": "Key Central Bank communication window. High intraday headline risk for US Treasury Yields, FX (DXY), and interest-rate-sensitive tech equities."
+            "summary": "Moderate headline catalyst scheduled (isolated mega-cap earnings or Fed rate guidance). Index trend is tradable, but exercise caution around event release windows."
         }
-    elif mega_earnings >= 1:
+    elif score == 1:
         return {
-            "regime": "📊 Single-Stock Earnings Dispersion",
+            "regime": "📊 Single-Stock Dispersion / Low Macro Beta",
             "color": "#00E5FF",
-            "summary": f"{mega_earnings} notable earnings release(s) scheduled. Index beta is moderate; focus on post-earnings drift and idiosyncratic individual setups."
+            "summary": "No broad index shocks scheduled. Macro backdrop is quiet; individual stock setups will trade on idiosyncratic fundamentals rather than broad market beta."
         }
     else:
         return {
-            "regime": "📈 Controlled Volatility / Trend Friendly",
+            "regime": "📈 Trend Friendly / Low Catalyst Density",
             "color": "#FFD600",
-            "summary": "Minor secondary macro prints without Tier-1 pivots. Favorable backdrop for swing trading and trend-following strategies."
+            "summary": "Low-impact routine data only. Clean environment for standard technical breakout, pullbacks, and momentum strategies."
         }
-
 # ==========================================
 # 6. CONSOLIDATE & BUILD DASHBOARD
 # ==========================================
