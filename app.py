@@ -48,21 +48,34 @@ today_str = today.strftime("%Y-%m-%d")
 end_str = end_date.strftime("%Y-%m-%d")
 
 # ==========================================
-# 2. DATA PIPELINES
+# 2. PIPELINE A: FMP ECONOMIC CALENDAR (FIXED & DEBUGGED)
 # ==========================================
 @st.cache_data(ttl=14400)
 def get_fmp_economic_calendar(api_key, start_d, end_d, impact_choice):
     events = []
     if not api_key:
         return events
+    
     url = f"https://financialmodelingprep.com/api/v3/economic_calendar?from={start_d}&to={end_d}&apikey={api_key}"
     try:
-        res = requests.get(url, timeout=10).json()
+        response = requests.get(url, timeout=10)
+        res = response.json()
+        
+        # Check if FMP returned an error object instead of a data list
+        if isinstance(res, dict):
+            if "Error Message" in res or "message" in res:
+                err_msg = res.get("Error Message") or res.get("message")
+                st.sidebar.error(f"FMP API Alert: {err_msg}")
+            return events
+            
         if isinstance(res, list):
             for item in res:
-                if item.get("country") != "US":
+                # Accept 'US', 'USA', or 'United States'
+                country = str(item.get("country", "")).upper()
+                if country not in ["US", "USA", "UNITED STATES"]:
                     continue
-                impact = str(item.get("impact", "")).capitalize()
+                
+                impact = str(item.get("impact", "Low")).capitalize()
                 if impact_choice == "High Impact Only" and impact != "High":
                     continue
                 elif impact_choice == "Medium & High" and impact not in ["High", "Medium"]:
@@ -70,20 +83,22 @@ def get_fmp_economic_calendar(api_key, start_d, end_d, impact_choice):
                 
                 raw_date = item.get("date", "")
                 event_date = raw_date.split(" ")[0] if " " in raw_date else raw_date
+                event_name = item.get("event", "Macro Event")
                 estimate = item.get("estimate", "N/A")
                 previous = item.get("previous", "N/A")
                 unit = item.get("unit", "")
                 
                 events.append({
                     "Date": event_date,
-                    "Event": f"[US] {item.get('event', 'Macro Event')}",
+                    "Event": f"[US] {event_name}",
                     "Category": "Macro Economic",
                     "Source": "FMP",
                     "Risk Tier": "🔴 Macro Pivot" if impact == "High" else "⚠️ Mid Impact",
                     "Details": f"Impact: {impact.upper()} | Est: {estimate} {unit} | Prev: {previous} {unit}"
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        st.sidebar.warning(f"FMP Connection Issue: {e}")
+        
     return events
 
 @st.cache_data(ttl=1800)
