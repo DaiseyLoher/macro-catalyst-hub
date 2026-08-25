@@ -5,29 +5,7 @@ import requests
 import feedparser
 
 st.set_page_config(page_title="Macro & Earnings Catalyst Hub", layout="wide")
-st.title("🎯 4-Week Catalyst & Binary Event Matrix")
-
-def classify_speech_impact(title, summary=""):
-    text = (title + " " + summary).lower()
-    
-    # Tier 1: Fed Leadership
-    tier_1_speakers = ["powell", "jefferson", "williams", "chair", "vice chair"]
-    tier_1_venues = ["jackson hole", "testimony", "monetary policy report", "humphrey-hawkins", "press conference"]
-    
-    # Tier 2: Influential Governors & Key Voters
-    tier_2_speakers = ["waller", "bowman", "barr", "cook", "kugler", "bostic", "goolsbee", "kashkari", "logan"]
-    tier_2_topics = ["economic outlook", "inflation", "monetary policy", "interest rates", "balance sheet", "qt"]
-
-    # Check Tier 1
-    if any(s in text for s in tier_1_speakers) or any(v in text for v in tier_1_venues):
-        if not any(k in text for k in ["welcoming remarks", "opening remarks", "adjournment"]):
-            return "🔴 Macro Pivot (High)", "Tier 1: Leadership / High Policy Beta"
-            
-    # Check Tier 2
-    if any(s in text for s in tier_2_speakers) and any(t in text for t in tier_2_topics):
-        return "⚠️ Rate Guidance (Mid)", "Tier 2: FOMC Voter Policy Discussion"
-        
-    return "🟡 Low Impact", "Tier 3: Academic / Non-Monetary Remarks"
+st.title("🎯 4-Week Tactical Catalyst & Binary Event Horizon")
 
 # ==========================================
 # 1. SECRETS & SIDEBAR CONFIGURATION
@@ -43,30 +21,48 @@ with st.sidebar:
         fred_key = st.text_input("FRED API Key (Official US Macro)", type="password")
     
     st.subheader("Watchlist")
+    default_top20 = "NVDA, MSFT, AAPL, AMZN, GOOGL, META, TSLA, TSM, ASML, AMD, JPM, GS, WMT, COST, HD, CAT, FDX, XOM, UNH, ORCL"
     watchlist_input = st.text_input(
         "Tickers (comma-separated)", 
-        "NVDA, MSFT, AAPL, AMZN, GOOGL, META, TSLA, TSM, ASML, AMD, JPM, GS, WMT, COST, HD, CAT, FDX, XOM, UNH, ORCL", 
-        key="watchlist_input_v10"
+        default_top20, 
+        key="watchlist_input_v11"
     )
     tickers = [t.strip().upper() for t in watchlist_input.split(",") if t.strip()]
 
-    st.subheader("Lookahead & Filters")
-    lookahead_days = st.slider("Lookahead Window (Days)", min_value=7, max_value=45, value=28)
+    st.subheader("Filters & Feeds")
     min_impact = st.selectbox("Minimum Event Impact", ["High Impact Only", "Medium & High", "All Impacts"], index=0)
-    
-    st.subheader("Active Data Pipelines")
     use_ff   = st.checkbox("ForexFactory (Economic & Speeches)", value=True)
     use_fred = st.checkbox("St. Louis Fed (FRED 30-Day)", value=True)
     use_fed  = st.checkbox("Central Bank Speeches & Keynotes", value=True)
     use_eia  = st.checkbox("EIA Crude Inventory Delta", value=True)
 
 today = datetime.date.today()
-end_date = today + datetime.timedelta(days=lookahead_days)
+end_date = today + datetime.timedelta(days=28)
 today_str = today.strftime("%Y-%m-%d")
 end_str = end_date.strftime("%Y-%m-%d")
 
 # ==========================================
-# 2. PIPELINE A: FOREXFACTORY (CALENDAR & SPEECHES)
+# 2. SPEECH TIERING ENGINE
+# ==========================================
+def classify_speech_impact(title, summary=""):
+    text = (title + " " + summary).lower()
+    tier_1_speakers = ["powell", "jefferson", "williams", "chair", "vice chair"]
+    tier_1_venues = ["jackson hole", "testimony", "monetary policy report", "humphrey-hawkins", "press conference"]
+    
+    tier_2_speakers = ["waller", "bowman", "barr", "cook", "kugler", "bostic", "goolsbee", "kashkari", "logan"]
+    tier_2_topics = ["economic outlook", "inflation", "monetary policy", "interest rates", "balance sheet", "qt"]
+
+    if any(s in text for s in tier_1_speakers) or any(v in text for v in tier_1_venues):
+        if not any(k in text for k in ["welcoming remarks", "opening remarks", "adjournment"]):
+            return "🔴 Macro Pivot (High)", "Tier 1: Fed Leadership / Policy Shift"
+            
+    if any(s in text for s in tier_2_speakers) and any(t in text for t in tier_2_topics):
+        return "⚠️ Rate Guidance (Mid)", "Tier 2: FOMC Voter Policy Discussion"
+        
+    return "🟡 Low Impact", "Tier 3: Academic / Routine Remarks"
+
+# ==========================================
+# 3. DATA PIPELINES
 # ==========================================
 @st.cache_data(ttl=1800)
 def get_forexfactory_thisweek(impact_choice):
@@ -76,15 +72,12 @@ def get_forexfactory_thisweek(impact_choice):
     try:
         res = requests.get(url, headers=headers, timeout=5).json()
         speech_keywords = ["speaks", "speech", "testimony", "press conference", "panel", "symposium"]
-        
         for item in res:
             curr = item.get("country", "")
             impact = item.get("impact", "")
             title = item.get("title", "")
-            
             if curr == "USD":
                 is_speech = any(k in title.lower() for k in speech_keywords)
-                
                 if impact_choice == "High Impact Only" and impact != "High" and not is_speech:
                     continue
                 elif impact_choice == "Medium & High" and impact not in ["High", "Medium"] and not is_speech:
@@ -93,14 +86,18 @@ def get_forexfactory_thisweek(impact_choice):
                 raw_date = item.get("date", "")
                 event_date = raw_date.split("T")[0] if "T" in raw_date else raw_date
                 
-                # Categorize speeches under Central Bank
-                category = "Central Bank" if is_speech else "Macro Economic"
-                risk = "⚠️ Rate Guidance" if is_speech else ("🔴 Macro Pivot" if impact == "High" else "⚠️ Mid Impact")
-                
-                forecast = item.get("forecast", "N/A")
-                prev = item.get("previous", "N/A")
-                details = f"Scheduled Central Bank Event" if is_speech else f"Forecast: {forecast} | Prev: {prev}"
-                
+                if is_speech:
+                    tier, desc = classify_speech_impact(title)
+                    category = "Central Bank"
+                    risk = tier
+                    details = desc
+                else:
+                    category = "Macro Economic"
+                    risk = "🔴 Macro Pivot" if impact == "High" else "⚠️ Mid Impact"
+                    forecast = item.get("forecast", "N/A")
+                    prev = item.get("previous", "N/A")
+                    details = f"Forecast: {forecast} | Previous: {prev}"
+
                 events.append({
                     "Date": event_date,
                     "Event": f"[{curr}] {title}",
@@ -113,15 +110,11 @@ def get_forexfactory_thisweek(impact_choice):
         pass
     return events
 
-# ==========================================
-# 3. PIPELINE B: FRED API (OFFICIAL 30-DAY MACRO)
-# ==========================================
 @st.cache_data(ttl=14400)
 def get_fred_calendar(api_key, start_d, end_d):
     events = []
     if not api_key:
         return events
-    
     tracked_releases = {
         10: "US CPI Inflation (Headline & Core)",
         11: "US PPI Producer Price Index",
@@ -132,7 +125,6 @@ def get_fred_calendar(api_key, start_d, end_d):
         27: "US Housing Starts & Building Permits",
         323:"FOMC Policy Materials"
     }
-    
     url = (
         f"https://api.stlouisfed.org/fred/releases/dates?"
         f"api_key={api_key}&file_type=json&include_release_dates_with_no_data=true&"
@@ -155,9 +147,6 @@ def get_fred_calendar(api_key, start_d, end_d):
         pass
     return events
 
-# ==========================================
-# 4. PIPELINE C: FINNHUB EARNINGS
-# ==========================================
 @st.cache_data(ttl=1800)
 def get_finnhub_earnings(api_key, ticker_list, start_d, end_d):
     events = []
@@ -185,33 +174,27 @@ def get_finnhub_earnings(api_key, ticker_list, start_d, end_d):
             continue
     return events
 
-# ==========================================
-# 5. PIPELINE D: CENTRAL BANK SPEECHES & SYMPOSIUMS
-# ==========================================
 @st.cache_data(ttl=1800)
 def get_central_bank_events(start_d, end_d):
     events = []
-    
-    # 1. Live Fed Speeches Feed (Transcripts & remarks published today)
     try:
         feed = feedparser.parse("https://www.federalreserve.gov/feeds/speeches.xml")
         for entry in feed.entries[:10]:
             pub_date = pd.to_datetime(entry.published).strftime("%Y-%m-%d")
+            tier, desc = classify_speech_impact(entry.title, entry.get("summary", ""))
             events.append({
                 "Date": pub_date,
                 "Event": f"[Fed] {entry.title}",
                 "Category": "Central Bank",
                 "Source": "Fed RSS",
-                "Risk Tier": "⚠️ Rate Guidance",
-                "Details": "Federal Reserve Governor Speech / Remarks"
+                "Risk Tier": tier,
+                "Details": desc
             })
     except Exception:
         pass
-
-    # 2. Major Scheduled Annual Keynotes & Symposia
-    cur_year = start_d.year
     
-    # Jackson Hole Symposium (Late August)
+    # Jackson Hole Symposium
+    cur_year = start_d.year
     jh_date = datetime.date(cur_year, 8, 27)
     if start_d <= jh_date <= end_d:
         events.append({
@@ -219,13 +202,12 @@ def get_central_bank_events(start_d, end_d):
             "Event": "[Fed] Jackson Hole Economic Policy Symposium",
             "Category": "Central Bank",
             "Source": "Fed Calendar",
-            "Risk Tier": "🔴 Macro Pivot",
-            "Details": "Global Central Banking Conference | Keynote on Monetary Policy"
+            "Risk Tier": "🔴 Macro Pivot (High)",
+            "Details": "Global Central Banking Keynote | Macro Policy Framework"
         })
-        
     return events
 
-def get_eia_releases(start_d, lookahead):
+def get_eia_releases(start_d, lookahead=28):
     events = []
     for i in range(lookahead):
         d = start_d + datetime.timedelta(days=i)
@@ -236,12 +218,12 @@ def get_eia_releases(start_d, lookahead):
                 "Category": "Energy",
                 "Source": "EIA Petroleum",
                 "Risk Tier": "🟡 Commodity Beta",
-                "Details": "10:30 AM EST | Commercial Crude Inventory Delta"
+                "Details": "10:30 AM EST | Official Crude Inventory Delta"
             })
     return events
 
 # ==========================================
-# 6. ROW STYLING ENGINE
+# 4. ROW COLOR STYLING
 # ==========================================
 def style_row_by_category(row):
     cat = row.get("Category", "")
@@ -256,7 +238,51 @@ def style_row_by_category(row):
     return [""] * len(row)
 
 # ==========================================
-# 7. CONSOLIDATE, STYLE & RENDER
+# 5. WEEK REGIME CLASSIFIER ENGINE
+# ==========================================
+def analyze_week_regime(week_df):
+    """
+    Evaluates catalyst density and types to classify market regime and tactical playbook.
+    """
+    if week_df.empty:
+        return {
+            "regime": "📈 Trend Continuation / Clear Horizon",
+            "color": "#00E676",
+            "summary": "Zero major scheduled macro or earnings shocks. High probability for technical levels to hold and uninterrupted trend continuation."
+        }
+    
+    macro_high = len(week_df[(week_df["Category"] == "Macro Economic") & (week_df["Risk Tier"].str.contains("🔴"))])
+    mega_earnings = len(week_df[week_df["Category"] == "Single Stock"])
+    cb_high = len(week_df[(week_df["Category"] == "Central Bank") & (week_df["Risk Tier"].str.contains("🔴"))])
+    total_events = len(week_df)
+
+    if macro_high >= 1 or mega_earnings >= 3 or (macro_high >= 1 and mega_earnings >= 1):
+        return {
+            "regime": "🚨 High Binary Risk / Volatility Cluster",
+            "color": "#FF1744",
+            "summary": f"Heavy binary catalyst cluster ({macro_high} Tier-1 Macro, {mega_earnings} Single-Stock Reports). Expect elevated IV, gap risk across indices, and choppy price action before prints."
+        }
+    elif cb_high >= 1 or len(week_df[week_df["Category"] == "Central Bank"]) >= 2:
+        return {
+            "regime": "⚠️ Policy Guidance / Rates Sensitivity",
+            "color": "#E040FB",
+            "summary": "Key Central Bank communication window. High intraday headline risk for US Treasury Yields, FX (DXY), and interest-rate-sensitive tech equities."
+        }
+    elif mega_earnings >= 1:
+        return {
+            "regime": "📊 Single-Stock Earnings Dispersion",
+            "color": "#00E5FF",
+            "summary": f"{mega_earnings} notable earnings release(s) scheduled. Index beta is moderate; focus on post-earnings drift and idiosyncratic individual setups."
+        }
+    else:
+        return {
+            "regime": "📈 Controlled Volatility / Trend Friendly",
+            "color": "#FFD600",
+            "summary": "Minor secondary macro prints without Tier-1 pivots. Favorable backdrop for swing trading and trend-following strategies."
+        }
+
+# ==========================================
+# 6. CONSOLIDATE & BUILD DASHBOARD
 # ==========================================
 all_catalysts = []
 
@@ -269,58 +295,68 @@ if finnhub_key:
 if use_fed:
     all_catalysts.extend(get_central_bank_events(today, end_date))
 if use_eia:
-    all_catalysts.extend(get_eia_releases(today, lookahead_days))
+    all_catalysts.extend(get_eia_releases(today, 28))
 
 df = pd.DataFrame(all_catalysts)
 
 if not df.empty:
     df["Date"] = pd.to_datetime(df["Date"])
-    # Include today and future events
     df = df[df["Date"].dt.date >= today]
     df = df.drop_duplicates(subset=["Date", "Event"]).sort_values(by="Date", ascending=True).reset_index(drop=True)
-    
-    df["Days Left"] = (df["Date"].dt.date - today).apply(
-        lambda x: "TODAY" if x.days == 0 else f"In {x.days}D"
-    )
-    df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
+    df["Days Left"] = (df["Date"].dt.date - today).apply(lambda x: "TODAY" if x.days == 0 else f"In {x.days}D")
+    df["Formatted Date"] = df["Date"].dt.strftime("%Y-%m-%d")
 
-    # KPI Summary Cards
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Tracked Tickers", len(tickers))
-    c2.metric("Total Catalysts", len(df))
-    c3.metric("Central Bank Speeches", len(df[df["Category"] == "Central Bank"]))
-    c4.metric("High-Risk Events (Next 7D)", len(df[df["Days Left"].str.contains("TODAY|In 1D|In 2D|In 3D|In 4D|In 5D|In 6D|In 7D")]))
+    # ==========================================
+    # VIEW SELECTOR: TACTICAL WEEKLY VS RAW TIMELINE
+    # ==========================================
+    tab1, tab2 = st.tabs(["🗓️ 4-Week Tactical Horizon (Regime View)", "📋 Raw Master Timeline"])
 
-    st.subheader(f"📅 Consolidated Catalyst Timeline ({today_str} to {end_str})")
-    
-    # Legend Guide
-    st.markdown(
-        """
-        <div style="display: flex; gap: 20px; font-size: 0.85rem; margin-bottom: 12px;">
-            <span><span style="display:inline-block;width:12px;height:12px;background:rgba(0,229,255,0.4);border-radius:2px;margin-right:6px;"></span><b>Single Stock</b></span>
-            <span><span style="display:inline-block;width:12px;height:12px;background:rgba(255,23,68,0.4);border-radius:2px;margin-right:6px;"></span><b>Macro Economic</b></span>
-            <span><span style="display:inline-block;width:12px;height:12px;background:rgba(255,214,0,0.4);border-radius:2px;margin-right:6px;"></span><b>Energy</b></span>
-            <span><span style="display:inline-block;width:12px;height:12px;background:rgba(224,64,251,0.4);border-radius:2px;margin-right:6px;"></span><b>Central Bank (Speeches)</b></span>
-        </div>
-        """, 
-        unsafe_allow_html=True
-    )
-
-    f_col1, f_col2 = st.columns(2)
-    with f_col1:
-        selected_cats = st.multiselect("Filter by Category", options=df["Category"].unique(), default=df["Category"].unique())
-    with f_col2:
-        selected_sources = st.multiselect("Filter by Source", options=df["Source"].unique(), default=df["Source"].unique())
+    with tab1:
+        st.subheader("Tactical Weekly Categorization & Risk Profiles")
         
-    filtered_df = df[df["Category"].isin(selected_cats) & df["Source"].isin(selected_sources)]
-    
-    display_df = filtered_df[["Date", "Days Left", "Event", "Category", "Source", "Risk Tier", "Details"]]
-    styled_df = display_df.style.apply(style_row_by_category, axis=1)
+        # Build 4 Distinct 7-Day Tranches
+        weeks = [
+            ("Week 1: Current Window", today, today + datetime.timedelta(days=6)),
+            ("Week 2: Next Week", today + datetime.timedelta(days=7), today + datetime.timedelta(days=13)),
+            ("Week 3: Forward Horizon", today + datetime.timedelta(days=14), today + datetime.timedelta(days=20)),
+            ("Week 4: Extended Horizon", today + datetime.timedelta(days=21), today + datetime.timedelta(days=27))
+        ]
 
-    st.dataframe(
-        styled_df,
-        use_container_width=True,
-        hide_index=True
-    )
+        for title, w_start, w_end in weeks:
+            w_df = df[(df["Date"].dt.date >= w_start) & (df["Date"].dt.date <= w_end)]
+            analysis = analyze_week_regime(w_df)
+            
+            with st.expander(f"{title} ({w_start.strftime('%b %d')} - {w_end.strftime('%b %d')}) — {analysis['regime']}", expanded=(w_start == today)):
+                st.markdown(
+                    f"""
+                    <div style="background-color: rgba(255,255,255,0.03); padding: 12px; border-left: 5px solid {analysis['color']}; border-radius: 4px; margin-bottom: 12px;">
+                        <h4 style="margin:0; color: {analysis['color']};">{analysis['regime']}</h4>
+                        <p style="margin: 5px 0 0 0; font-size: 0.95rem; color: #ddd;">{analysis['summary']}</p>
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
+                
+                if not w_df.empty:
+                    w_display = w_df[["Formatted Date", "Days Left", "Event", "Category", "Source", "Risk Tier", "Details"]].rename(columns={"Formatted Date": "Date"})
+                    w_styled = w_display.style.apply(style_row_by_category, axis=1)
+                    st.dataframe(w_styled, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("No binary catalysts detected in this window.")
+
+    with tab2:
+        st.subheader("Master Catalyst Stream")
+        
+        f_col1, f_col2 = st.columns(2)
+        with f_col1:
+            selected_cats = st.multiselect("Filter Category", options=df["Category"].unique(), default=df["Category"].unique())
+        with f_col2:
+            selected_sources = st.multiselect("Filter Source", options=df["Source"].unique(), default=df["Source"].unique())
+            
+        filtered_df = df[df["Category"].isin(selected_cats) & df["Source"].isin(selected_sources)]
+        display_df = filtered_df[["Formatted Date", "Days Left", "Event", "Category", "Source", "Risk Tier", "Details"]].rename(columns={"Formatted Date": "Date"})
+        styled_df = display_df.style.apply(style_row_by_category, axis=1)
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
 else:
-    st.warning("No scheduled catalysts found. Check your API keys or expand the lookahead window.")
+    st.warning("No scheduled catalysts found. Verify API keys or configuration.")
